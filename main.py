@@ -1,6 +1,6 @@
 # imports
-import json
-import sqlite3
+import re
+from datetime import date, timedelta
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -9,70 +9,111 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
+from backend.database.database import create_database
+from backend.database.crud import (
+    add_exercise,
+    add_routine_day,
+    create_routine,
+    create_user,
+    get_conversation_history,
+    get_current_routine,
+    get_user,
+    save_message,
+    update_user_profile,
+)
 
 
 #-----------------------------------------------------------------------
 # Database Setup (SQLite local persistence)
 #-----------------------------------------------------------------------
 def init_db():
-    conn = sqlite3.connect("app_data.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS profile (
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            age TEXT,
-            height TEXT,
-            weight TEXT,
-            goals TEXT,
-            experience TEXT,
-            frequency TEXT
+    """Create the schema and a local account for the single-user prototype."""
+    create_database()
+    profile = get_user(1)
+    if profile is None:
+        # This local account is not an authentication system; add real auth later.
+        create_user("local@fitworks.app", "local-only", "")
+    elif profile["email"] == "local@fitworks.app" and profile["name"] == "Fitness User":
+        # Clear the old placeholder name so a fresh install still opens onboarding.
+        update_user_profile(
+            1,
+            "",
+            profile["age"],
+            profile["sex"],
+            profile["height_cm"],
+            profile["weight_kg"],
+            profile["goals"],
+            profile["experience_level"],
+            profile["weekly_frequency"],
+            profile["injuries"],
         )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            role TEXT,
-            content TEXT
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS current_routine (
-            id INTEGER PRIMARY KEY,
-            routine_json TEXT
-        )
-    """)
-    
-    # Initilize empty profile record if missing
-    cursor.execute("SELECT COUNT(*) FROM profile WHERE id = 1")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("""
-            INSERT INTO profile (id, name, age, height, weight, goals, experience, frequency)
-            VALUES (1, '', '', '', '', '', '', '')
-        """)
-    conn.commit()
-    conn.close()
 
 init_db()
+
+
+def _exercise_fields(exercise_text):
+    """Extract simple set/rep or duration details from the demo routine text."""
+    set_match = re.search(r"(\d+)\s*x\s*(\d+[a-z]*)", exercise_text, re.IGNORECASE)
+    if set_match:
+        name = exercise_text[:set_match.start()].strip()
+        return name, int(set_match.group(1)), set_match.group(2), None
+
+    duration_match = re.search(r"(\d+)\s*(sec|seconds|min|mins|minutes)\b", exercise_text, re.IGNORECASE)
+    if duration_match:
+        amount = int(duration_match.group(1))
+        unit = duration_match.group(2).lower()
+        duration_sec = amount * 60 if unit.startswith("m") else amount
+        name = exercise_text[:duration_match.start()].strip()
+        return name, None, None, duration_sec
+
+    return exercise_text, None, None, None
 
 
 #-----------------------------------------------------------------------
 # Backend Mock / Local Proxy
 #-----------------------------------------------------------------------
+# Example cases, suitable for conversion into simple assert tests later:
+#   ("Build me a fresh exercise schedule", "generate_routine")
+#   ("My ankle hurts after training", "update_profile")
+#   ("Change my weekly frequency", "update_profile")
+#   ("Update my workout plan", "update_profile")  # profile updates take priority
+#   ("Thanks for checking in", "general_chat")
+def classify_query_intent(user_message: str) -> str:
+    """Classify a chat message as generate_routine, update_profile, or general_chat."""
+    message_words = set(re.findall(r"\b\w+\b", user_message.lower()))
+    update_keywords = {
+        "injury", "injuries", "sprain", "sprains", "hurt", "hurts", "hurting",
+        "pain", "pains", "update", "updates", "updating", "frequency", "frequencies",
+    }
+
+    # Profile and injury changes take priority so a safety note is not treated as a new plan request.
+    if message_words.intersection(update_keywords) or re.search(
+        r"\bchange\s+my\b", user_message, re.IGNORECASE
+    ):
+        return "update_profile"
+
+    routine_keywords = {
+        "generate", "generates", "generated", "generating", "routine", "routines",
+        "workout", "workouts", "plan", "plans", "schedule", "schedules",
+        "exercise", "exercises",
+    }
+    if message_words.intersection(routine_keywords):
+        return "generate_routine"
+    return "general_chat"
+
+
 def mock_backend_chat(user_message):
     """
     Simulates /chat API endpoint proxy behavior.
     Updates database/routine data structure depending on context.
     """
-    conn = sqlite3.connect("app_data.db")
-    cursor = conn.cursor()
+    user_id = 1
+    save_message(user_id, "user", user_message)
+    linked_routine_id = None
     
-    # Save user message
-    cursor.execute("INSERT INTO chat_history (role, content) VALUES (?, ?)", ("user", user_message))
-    
-    msg_lower = user_message.lower()
-    
-    if "generate" in msg_lower or "routine" in msg_lower or "workout" in msg_lower:
+    intent = classify_query_intent(user_message)
+
+    if intent == "generate_routine":
         # Mock structured output for routine generation (Section 6.2)
         sample_routine = {
             "Monday": {"label": "Push Day", "exercises": ["Bench Press 3x10", "Overhead Press 3x12", "Tricep Dips 3x15"]},
@@ -83,20 +124,49 @@ def mock_backend_chat(user_message):
             "Saturday": {"label": "Active Recovery", "exercises": ["Yoga / Mobility Work"]},
             "Sunday": {"label": "Rest Day", "exercises": ["Rest"]}
         }
-        cursor.execute("INSERT OR REPLACE INTO current_routine (id, routine_json) VALUES (1, ?)", 
-                       (json.dumps(sample_routine),))
+        current_routine = get_current_routine(user_id)
+        week_start = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+        routine_id = create_routine(
+            user_id,
+            week_start,
+            source="chat_update" if current_routine else "initial",
+        )
+        for day_name, details in sample_routine.items():
+            day_id = add_routine_day(routine_id, day_name, details["label"])
+            for exercise_text in details["exercises"]:
+                name, sets, reps, duration_sec = _exercise_fields(exercise_text)
+                add_exercise(day_id, name, sets, reps, duration_sec)
+        linked_routine_id = routine_id
         response = "I've generated a new 7-day workout routine tailored to your profile! You can view it on the Routine tab."
-    elif "sprain" in msg_lower or "injury" in msg_lower or "update" in msg_lower:
-        # Mock profile/routine adjustment via conversation (Section 6.3)
-        response = "I've updated your profile notes regarding your recovery. I have adjusted your routine to reduce leg intensity."
+    elif intent == "update_profile":
+        profile = get_user(user_id)
+        message_words = set(re.findall(r"\b\w+\b", user_message.lower()))
+        injury_keywords = {
+            "injury", "injuries", "sprain", "sprains", "hurt", "hurts", "hurting",
+            "pain", "pains",
+        }
+        if profile and message_words.intersection(injury_keywords):
+            old_notes = profile["injuries"] or ""
+            notes = f"{old_notes}; {user_message}".strip("; ")
+            update_user_profile(
+                user_id,
+                profile["name"],
+                profile["age"],
+                profile["sex"],
+                profile["height_cm"],
+                profile["weight_kg"],
+                profile["goals"],
+                profile["experience_level"],
+                profile["weekly_frequency"],
+                notes,
+            )
+            response = "I've saved that recovery note to your profile. Please avoid painful movements and consult a professional about your injury."
+        else:
+            response = "Tell me which profile detail you'd like to update, such as an injury note or weekly workout frequency."
     else:
         response = f"I'm your AI Fitness Assistant. You said: '{user_message}'. How can I adjust your routine today?"
 
-    # Save assistant message
-    cursor.execute("INSERT INTO chat_history (role, content) VALUES (?, ?)", ("assistant", response))
-    conn.commit()
-    conn.close()
-    
+    save_message(user_id, "assistant", response, linked_routine_id)
     return response
 
 
@@ -133,22 +203,33 @@ class ProfileSetupScreen(Screen):
         
         grid.add_widget(Label(text="Name:"))
         self.inp_name = TextInput(multiline=False)
+        profile = get_user(1)
+        if profile:
+            self.inp_name.text = profile["name"] or ""
         grid.add_widget(self.inp_name)
         
         grid.add_widget(Label(text="Age:"))
         self.inp_age = TextInput(multiline=False)
+        if profile and profile["age"] is not None:
+            self.inp_age.text = str(profile["age"])
         grid.add_widget(self.inp_age)
         
         grid.add_widget(Label(text="Goals:"))
         self.inp_goals = TextInput(multiline=False)
+        if profile:
+            self.inp_goals.text = ", ".join(profile["goals"])
         grid.add_widget(self.inp_goals)
         
         grid.add_widget(Label(text="Experience Level:"))
         self.inp_exp = TextInput(multiline=False)
+        if profile:
+            self.inp_exp.text = profile["experience_level"] or ""
         grid.add_widget(self.inp_exp)
         
         grid.add_widget(Label(text="Weekly Frequency:"))
         self.inp_freq = TextInput(multiline=False)
+        if profile and profile["weekly_frequency"] is not None:
+            self.inp_freq.text = str(profile["weekly_frequency"])
         grid.add_widget(self.inp_freq)
         
         layout.add_widget(grid)
@@ -160,16 +241,27 @@ class ProfileSetupScreen(Screen):
         self.add_widget(layout)
         
     def save_and_continue(self, instance):
-        conn = sqlite3.connect("app_data.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE profile SET name=?, age=?, goals=?, experience=?, frequency=? WHERE id=1
-        """, (self.inp_name.text, self.inp_age.text, self.inp_goals.text, self.inp_exp.text, self.inp_freq.text))
-        conn.commit()
-        conn.close()
+        profile = get_user(1)
+        has_current_routine = get_current_routine(1) is not None
+        age_text = self.inp_age.text.strip()
+        frequency_text = self.inp_freq.text.strip()
+        goals = [goal.strip() for goal in self.inp_goals.text.split(",") if goal.strip()]
+        update_user_profile(
+            1,
+            self.inp_name.text.strip(),
+            int(age_text) if age_text.isdigit() else None,
+            profile["sex"] if profile else None,
+            profile["height_cm"] if profile else None,
+            profile["weight_kg"] if profile else None,
+            goals,
+            self.inp_exp.text.strip(),
+            int(frequency_text) if frequency_text.isdigit() else None,
+            profile["injuries"] if profile else None,
+        )
         
-        # Trigger initial routine generation via mock backend
-        mock_backend_chat("Please generate my initial routine.")
+        # Generate a starter routine only once; profile edits should keep this week's plan.
+        if not has_current_routine:
+            mock_backend_chat("Please generate my initial routine.")
         
         # Switch to Main App layout
         self.manager.current = 'main_app'
@@ -183,6 +275,12 @@ class ChatTab(BoxLayout):
         self.scroll = ScrollView(size_hint=(1, 0.85))
         self.chat_log = Label(text="AI Assistant: Hello! How can I help with your routine today?\n", 
                               size_hint_y=None, halign='left', valign='top')
+        messages = get_conversation_history(1)
+        if messages:
+            self.chat_log.text = "".join(
+                f"{'You' if message['role'] == 'user' else 'AI'}: {message['content']}\n"
+                for message in messages
+            )
         self.chat_log.bind(texture_size=self._update_text_size)
         self.scroll.add_widget(self.chat_log)
         self.add_widget(self.scroll)
@@ -237,19 +335,18 @@ class RoutineTab(BoxLayout):
         self.routine_display.text_size = (self.width - 20, None)
 
     def load_routine(self, instance):
-        conn = sqlite3.connect("app_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT routine_json FROM current_routine WHERE id = 1")
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row and row[0]:
-            routine = json.loads(row[0])
+        routine = get_current_routine(1)
+        if routine and routine["days"]:
             out_text = "=== YOUR WEEKLY ROUTINE ===\n\n"
-            for day, details in routine.items():
-                out_text += f"• {day}: {details['label']}\n"
-                for ex in details['exercises']:
-                    out_text += f"    - {ex}\n"
+            for day in routine["days"]:
+                out_text += f"• {day['day_of_week']}: {day['label']}\n"
+                for exercise in day["exercises"]:
+                    description = exercise["name"]
+                    if exercise["sets"] is not None and exercise["reps"]:
+                        description += f" {exercise['sets']}x{exercise['reps']}"
+                    if exercise["duration_sec"]:
+                        description += f" ({exercise['duration_sec']} sec)"
+                    out_text += f"    - {description}\n"
                 out_text += "\n"
             self.routine_display.text = out_text
         else:
@@ -286,14 +383,14 @@ class AccountTab(BoxLayout):
         self.profile_info.text_size = (self.width - 20, None)
 
     def load_profile(self, instance):
-        conn = sqlite3.connect("app_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, age, goals, experience, frequency FROM profile WHERE id = 1")
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            text = f"Name: {row[0]}\nAge: {row[1]}\nGoals: {row[2]}\nExperience: {row[3]}\nFrequency: {row[4]} days/week"
+        profile = get_user(1)
+        if profile:
+            goals = ", ".join(profile["goals"])
+            text = (
+                f"Name: {profile['name']}\nAge: {profile['age'] or ''}\n"
+                f"Goals: {goals}\nExperience: {profile['experience_level'] or ''}\n"
+                f"Frequency: {profile['weekly_frequency'] or ''} days/week"
+            )
             self.profile_info.text = text
 
 
@@ -359,6 +456,9 @@ class FitWorksAI(App):
         sm.add_widget(WelcomeScreen(name='welcome'))
         sm.add_widget(ProfileSetupScreen(name='profile_setup'))
         sm.add_widget(MainAppScreen(name='main_app'))
+        profile = get_user(1)
+        if profile and (profile["name"] or "").strip():
+            sm.current = "main_app"
         return sm
 
 
