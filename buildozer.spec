@@ -29,7 +29,7 @@ version = 0.1.0
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy,google-genai,pydantic,python-dotenv,urllib3,certifi,charset-normalizer,idna,requests
+requirements = python3,kivy,openssl,python-dotenv,urllib3,certifi,charset_normalizer,idna,requests
 
 # (str) Supported orientation (one of landscape, sensorLandscape, portrait or all)
 orientation = portrait
@@ -60,7 +60,7 @@ android.private_storage = True
 android.accept_sdk_license = True
 
 # (str) The Android arch to build for
-android.archs = arm64-v8a, armeabi-v7a
+android.archs = arm64-v8a
 
 # (bool) enables Android auto backup feature (Android API >=23)
 android.allow_backup = True
