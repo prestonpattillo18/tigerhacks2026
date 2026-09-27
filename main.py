@@ -8,12 +8,16 @@ from datetime import date, timedelta
 from threading import Thread
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.metrics import dp, sp
+from kivy.core.window import Window
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
+from kivy.uix.spinner import Spinner
 from kivy.uix.scrollview import ScrollView
 from backend.ai.gemini_client import generate_coach_reply, generate_weekly_routine
 from backend.database.database import create_database
@@ -28,6 +32,121 @@ from backend.database.crud import (
     save_message,
     update_user_profile,
 )
+
+
+# Shared colors keep the app consistent without introducing a separate theme system.
+COLORS = {
+    "background": (0.055, 0.082, 0.075, 1),
+    "surface": (0.105, 0.145, 0.13, 1),
+    "surface_light": (0.15, 0.20, 0.175, 1),
+    "accent": (0.72, 0.91, 0.38, 1),
+    "coral": (0.96, 0.48, 0.34, 1),
+    "text": (0.94, 0.96, 0.91, 1),
+    "muted": (0.65, 0.73, 0.68, 1),
+    "ink": (0.08, 0.12, 0.09, 1),
+}
+Window.clearcolor = COLORS["background"]
+
+
+def _style_screen(screen):
+    """Paint a screen background and keep it fitted when the phone resizes."""
+    with screen.canvas.before:
+        Color(*COLORS["background"])
+        screen._background_rect = Rectangle(pos=screen.pos, size=screen.size)
+
+    def update_background(widget, _value):
+        widget._background_rect.pos = widget.pos
+        widget._background_rect.size = widget.size
+
+    screen.bind(pos=update_background, size=update_background)
+
+
+def _add_card_background(widget, color=None):
+    """Draw a rounded panel behind a layout without adding another widget."""
+    with widget.canvas.before:
+        fill = Color(*(color or COLORS["surface"]))
+        rectangle = RoundedRectangle(pos=widget.pos, size=widget.size, radius=[dp(14)])
+
+    def update_card(widget, _value):
+        rectangle.pos = widget.pos
+        rectangle.size = widget.size
+
+    widget.bind(pos=update_card, size=update_card)
+    return fill
+
+
+def _style_button(button, primary=False):
+    """Give a Kivy button a rounded touch target and visible pressed state."""
+    button.background_normal = ""
+    button.background_down = ""
+    button.background_color = (0, 0, 0, 0)
+    button.color = COLORS["ink"] if primary else COLORS["text"]
+    button.bold = True
+    button.font_size = sp(16)
+    button._liftforge_primary = primary
+    button._liftforge_normal = COLORS["accent"] if primary else COLORS["surface_light"]
+    button._liftforge_pressed = COLORS["coral"] if primary else COLORS["surface"]
+
+    with button.canvas.before:
+        fill = Color(*button._liftforge_normal)
+        rectangle = RoundedRectangle(pos=button.pos, size=button.size, radius=[dp(12)])
+
+    def update_button(widget, _value):
+        rectangle.pos = widget.pos
+        rectangle.size = widget.size
+        fill.rgba = (
+            widget._liftforge_pressed
+            if widget.state == "down"
+            else widget._liftforge_normal
+        )
+
+    button._liftforge_fill = fill
+    button._liftforge_update = update_button
+    button.bind(pos=update_button, size=update_button, state=update_button)
+
+
+def _set_button_primary(button, primary):
+    """Change a styled button's color when it becomes the selected tab."""
+    button._liftforge_primary = primary
+    button._liftforge_normal = COLORS["accent"] if primary else COLORS["surface_light"]
+    button._liftforge_pressed = COLORS["coral"] if primary else COLORS["surface"]
+    button.color = COLORS["ink"] if primary else COLORS["text"]
+    button._liftforge_update(button, None)
+
+
+def _style_input(text_input):
+    """Use high-contrast input colors and comfortable finger spacing."""
+    text_input.background_normal = ""
+    text_input.background_active = ""
+    text_input.background_color = COLORS["surface_light"]
+    text_input.foreground_color = COLORS["text"]
+    text_input.cursor_color = COLORS["accent"]
+    text_input.hint_text_color = COLORS["muted"]
+    text_input.padding = [dp(12), dp(12)]
+    text_input.font_size = sp(16)
+
+
+def _make_wrapping_label(text, color=None, font_size=15, bold=False):
+    """Create a left-aligned label whose height follows wrapped text."""
+    label = Label(
+        text=text,
+        size_hint_y=None,
+        height=dp(28),
+        color=color or COLORS["text"],
+        font_size=sp(font_size),
+        bold=bold,
+        halign="left",
+        valign="top",
+    )
+
+    def update_width(widget, width):
+        widget.text_size = (max(dp(120), width), None)
+
+    def update_height(widget, texture_size):
+        widget.height = max(dp(24), texture_size[1] + dp(4))
+
+    label.bind(width=update_width, texture_size=update_height)
+    return label
 
 
 #-----------------------------------------------------------------------
@@ -256,18 +375,72 @@ def mock_backend_chat(user_message):
 class WelcomeScreen(Screen):
     def __init__(self, **kwargs):
         super(WelcomeScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=20, spacing=20)
-        
-        lbl = Label(text="AI Fitness & Wellbeing App", font_size=24, size_hint_y=0.4)
-        desc = Label(text="Welcome! Let's get your personalized routine set up.", font_size=16, size_hint_y=0.3)
-        btn = Button(text="Start Onboarding", size_hint_y=0.2)
+        _style_screen(self)
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=[dp(24), dp(32)],
+            spacing=dp(20),
+        )
+        brand = Label(
+            text="LIFTFORGE  /  TRAINING, BUILT AROUND YOU",
+            color=COLORS["accent"],
+            bold=True,
+            font_size=sp(13),
+            size_hint_y=None,
+            height=dp(32),
+            halign="left",
+            valign="middle",
+        )
+        brand.bind(size=lambda label, _size: setattr(label, "text_size", label.size))
+
+        hero = BoxLayout(
+            orientation="vertical",
+            padding=dp(22),
+            spacing=dp(12),
+        )
+        _add_card_background(hero)
+        title = Label(
+            text="Build strength.\nFind your rhythm.",
+            color=COLORS["text"],
+            font_size=sp(34),
+            bold=True,
+            halign="left",
+            valign="middle",
+            size_hint_y=0.52,
+        )
+        title.bind(size=lambda label, _size: setattr(label, "text_size", label.size))
+        desc = Label(
+            text="A weekly plan shaped around your goals, experience, and real life.",
+            color=COLORS["muted"],
+            font_size=sp(17),
+            halign="left",
+            valign="top",
+            size_hint_y=0.38,
+        )
+        desc.bind(size=lambda label, _size: setattr(label, "text_size", label.size))
+        hero.add_widget(title)
+        hero.add_widget(desc)
+
+        steps = Label(
+            text="01  Set your goals   ·   02  Get your week   ·   03  Adjust with your coach",
+            color=COLORS["muted"],
+            font_size=sp(13),
+            halign="left",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(48),
+        )
+        steps.bind(size=lambda label, _size: setattr(label, "text_size", label.size))
+        btn = Button(text="Build my first routine", size_hint_y=None, height=dp(58))
+        _style_button(btn, primary=True)
         btn.bind(on_release=self.go_next)
-        
-        layout.add_widget(lbl)
-        layout.add_widget(desc)
+
+        layout.add_widget(brand)
+        layout.add_widget(hero)
+        layout.add_widget(steps)
         layout.add_widget(btn)
         self.add_widget(layout)
-        
+
     def go_next(self, instance):
         self.manager.current = 'profile_setup'
 
@@ -275,50 +448,112 @@ class WelcomeScreen(Screen):
 class ProfileSetupScreen(Screen):
     def __init__(self, **kwargs):
         super(ProfileSetupScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=15, spacing=10)
-        
-        layout.add_widget(Label(text="Onboarding: Profile Setup", font_size=20, size_hint_y=None, height=40))
-        
-        grid = GridLayout(cols=2, spacing=10, size_hint_y=0.7)
-        
-        grid.add_widget(Label(text="Name:"))
+        _style_screen(self)
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=[dp(20), dp(18)],
+            spacing=dp(12),
+        )
+
+        heading = Label(
+            text="Your starting point",
+            color=COLORS["text"],
+            bold=True,
+            font_size=sp(24),
+            size_hint_y=None,
+            height=dp(40),
+            halign="left",
+            valign="middle",
+        )
+        heading.bind(size=lambda label, _size: setattr(label, "text_size", label.size))
+        layout.add_widget(heading)
+
+        grid = GridLayout(cols=2, spacing=[dp(12), dp(10)], size_hint_y=0.82)
+        grid.row_force_default = True
+        grid.row_default_height = dp(50)
+
+        grid.add_widget(self._field_label("Name"))
         self.inp_name = TextInput(multiline=False)
+        self.inp_name.hint_text = "What should we call you?"
+        _style_input(self.inp_name)
         profile = get_user(1)
         if profile:
             self.inp_name.text = profile["name"] or ""
         grid.add_widget(self.inp_name)
-        
-        grid.add_widget(Label(text="Age:"))
-        self.inp_age = TextInput(multiline=False)
+
+        grid.add_widget(self._field_label("Age"))
+        self.inp_age = TextInput(multiline=False, input_filter="int", hint_text="Years")
+        _style_input(self.inp_age)
         if profile and profile["age"] is not None:
             self.inp_age.text = str(profile["age"])
         grid.add_widget(self.inp_age)
-        
-        grid.add_widget(Label(text="Goals:"))
+
+        grid.add_widget(self._field_label("Goals"))
         self.inp_goals = TextInput(multiline=False)
+        self.inp_goals.hint_text = "Strength, energy, mobility..."
+        _style_input(self.inp_goals)
         if profile:
             self.inp_goals.text = ", ".join(profile["goals"])
         grid.add_widget(self.inp_goals)
-        
-        grid.add_widget(Label(text="Experience Level:"))
-        self.inp_exp = TextInput(multiline=False)
+
+        grid.add_widget(self._field_label("Experience"))
+        experience_values = ["beginner", "intermediate", "advanced"]
+        if profile and profile["experience_level"] and profile["experience_level"] not in experience_values:
+            experience_values.append(profile["experience_level"])
+        self.inp_exp = Spinner(
+            text=(profile["experience_level"] if profile and profile["experience_level"] else "Choose level"),
+            values=experience_values,
+            size_hint_y=None,
+            height=dp(50),
+            background_normal="",
+            background_down="",
+            background_color=COLORS["surface_light"],
+            color=COLORS["text"],
+            font_size=sp(15),
+        )
         if profile:
-            self.inp_exp.text = profile["experience_level"] or ""
+            self.inp_exp.text = profile["experience_level"] or "Choose level"
         grid.add_widget(self.inp_exp)
-        
-        grid.add_widget(Label(text="Weekly Frequency:"))
-        self.inp_freq = TextInput(multiline=False)
+
+        grid.add_widget(self._field_label("Days per week"))
+        self.inp_freq = Spinner(
+            text=(str(profile["weekly_frequency"]) if profile and profile["weekly_frequency"] is not None else "Choose days"),
+            values=[str(days) for days in range(1, 8)],
+            size_hint_y=None,
+            height=dp(50),
+            background_normal="",
+            background_down="",
+            background_color=COLORS["surface_light"],
+            color=COLORS["text"],
+            font_size=sp(15),
+        )
         if profile and profile["weekly_frequency"] is not None:
             self.inp_freq.text = str(profile["weekly_frequency"])
         grid.add_widget(self.inp_freq)
-        
+
         layout.add_widget(grid)
-        
-        btn_save = Button(text="Generate Routine & Continue", size_hint_y=None, height=50)
+
+        btn_save = Button(
+            text="Save and build my week",
+            size_hint_y=None,
+            height=dp(58),
+        )
+        _style_button(btn_save, primary=True)
         btn_save.bind(on_release=self.save_and_continue)
         layout.add_widget(btn_save)
-        
+
         self.add_widget(layout)
+
+    @staticmethod
+    def _field_label(text):
+        """Create a consistently styled label for a profile field."""
+        return Label(
+            text=text,
+            color=COLORS["muted"],
+            font_size=sp(14),
+            halign="left",
+            valign="middle",
+        )
         
     def save_and_continue(self, instance):
         profile = get_user(1)
@@ -351,35 +586,79 @@ class ProfileSetupScreen(Screen):
 
 class ChatTab(BoxLayout):
     def __init__(self, **kwargs):
-        super(ChatTab, self).__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
-        
-        # Chat log display
-        self.scroll = ScrollView(size_hint=(1, 0.85))
-        self.chat_log = Label(text="AI Assistant: Hello! How can I help with your routine today?\n", 
-                              size_hint_y=None, halign='left', valign='top')
+        super(ChatTab, self).__init__(
+            orientation="vertical",
+            padding=[dp(14), dp(12)],
+            spacing=dp(12),
+            **kwargs,
+        )
+
+        header = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(58))
+        title = Label(
+            text="LiftForge Coach",
+            color=COLORS["text"],
+            font_size=sp(21),
+            bold=True,
+            halign="left",
+            valign="middle",
+        )
+        title.bind(size=lambda label, _size: setattr(label, "text_size", label.size))
+        subtitle = Label(
+            text="Quick answers, practical changes",
+            color=COLORS["muted"],
+            font_size=sp(13),
+            halign="left",
+            valign="middle",
+        )
+        subtitle.bind(size=lambda label, _size: setattr(label, "text_size", label.size))
+        header.add_widget(title)
+        header.add_widget(subtitle)
+
+        # The scroll panel keeps longer conversations readable on a phone.
+        self.scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        _add_card_background(self.scroll)
+        self.chat_log = Label(
+            text="AI Assistant: Hello! How can I help with your routine today?\n",
+            size_hint_y=None,
+            halign="left",
+            valign="top",
+            color=COLORS["text"],
+            font_size=sp(15),
+            padding=[dp(16), dp(16)],
+        )
         messages = get_conversation_history(1)
         if messages:
             self.chat_log.text = "".join(
                 f"{'You' if message['role'] == 'user' else 'AI'}: {message['content']}\n"
                 for message in messages
             )
-        self.chat_log.bind(texture_size=self._update_text_size)
+        self.chat_log.bind(texture_size=self._update_text_size, width=self._update_text_size)
         self.scroll.add_widget(self.chat_log)
+        self.scroll.bind(size=self._update_text_size)
         self.add_widget(self.scroll)
-        
-        # Input controls
-        input_box = BoxLayout(orientation='horizontal', size_hint=(1, 0.15), spacing=5)
-        self.msg_input = TextInput(multiline=False)
-        self.send_button = Button(text="Send", size_hint_x=0.25)
+
+        input_box = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(62),
+            spacing=dp(10),
+        )
+        self.msg_input = TextInput(
+            multiline=True,
+            hint_text="Ask about your training...",
+        )
+        _style_input(self.msg_input)
+        self.send_button = Button(text="Send", size_hint_x=None, width=dp(84))
+        _style_button(self.send_button, primary=True)
         self.send_button.bind(on_release=self.send_message)
-        
+
         input_box.add_widget(self.msg_input)
         input_box.add_widget(self.send_button)
         self.add_widget(input_box)
         
-    def _update_text_size(self, instance, value):
-        self.chat_log.height = value[1]
-        self.chat_log.text_size = (self.width - 20, None)
+    def _update_text_size(self, instance, _value):
+        self.chat_log.text_size = (max(dp(120), self.scroll.width - dp(32)), None)
+        self.chat_log.height = self.chat_log.texture_size[1] + dp(32)
         
     def send_message(self, instance):
         text = self.msg_input.text.strip()
@@ -389,6 +668,7 @@ class ChatTab(BoxLayout):
     def start_background_request(self, user_message):
         """Show immediate feedback, then handle the chat request off the UI thread."""
         self.chat_log.text += f"\nYou: {user_message}\nAI: Thinking...\n"
+        self.scroll.scroll_y = 0
         self.msg_input.text = ""
         self.msg_input.disabled = True
         self.send_button.disabled = True
@@ -431,6 +711,7 @@ class ChatTab(BoxLayout):
         """Update Kivy widgets on the main thread after the worker finishes."""
         self.chat_log.text = self.chat_log.text.replace("AI: Thinking...\n", "", 1)
         self.chat_log.text += f"AI: {response}\n"
+        self.scroll.scroll_y = 0
         self.msg_input.disabled = False
         self.send_button.disabled = False
 
@@ -443,47 +724,123 @@ class ChatTab(BoxLayout):
 
 class RoutineTab(BoxLayout):
     def __init__(self, **kwargs):
-        super(RoutineTab, self).__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
-        
-        self.scroll = ScrollView(size_hint=(1, 0.85))
-        self.routine_display = Label(text="No routine generated yet.", size_hint_y=None, halign='left', valign='top')
-        self.routine_display.bind(texture_size=self._update_text_size)
-        self.scroll.add_widget(self.routine_display)
+        super(RoutineTab, self).__init__(
+            orientation="vertical",
+            padding=[dp(14), dp(12)],
+            spacing=dp(10),
+            **kwargs,
+        )
+
+        title = _make_wrapping_label("Your week", font_size=22, bold=True)
+        title.height = dp(34)
+        self.add_widget(title)
+
+        self.scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        _add_card_background(self.scroll)
+        self.routine_content = BoxLayout(
+            orientation="vertical",
+            size_hint_y=None,
+            spacing=dp(10),
+            padding=[dp(10), dp(10)],
+        )
+        self.routine_content.bind(
+            minimum_height=self.routine_content.setter("height")
+        )
+        self.scroll.add_widget(self.routine_content)
         self.add_widget(self.scroll)
-        
-        btn_box = BoxLayout(orientation='horizontal', size_hint=(1, 0.15), spacing=5)
-        btn_refresh = Button(text="Refresh View")
+
+        self.routine_display = _make_wrapping_label(
+            "Your weekly plan will appear here.", color=COLORS["muted"], font_size=13
+        )
+        self.routine_display.height = dp(30)
+        self.add_widget(self.routine_display)
+
+        btn_box = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(56),
+            spacing=dp(10),
+        )
+        btn_refresh = Button(text="Refresh")
+        _style_button(btn_refresh)
         btn_refresh.bind(on_release=self.load_routine)
-        btn_export = Button(text="Export .ics Calendar")
+        btn_export = Button(text="Export calendar")
+        _style_button(btn_export, primary=True)
         btn_export.bind(on_release=self.export_ics)
-        
+
         btn_box.add_widget(btn_refresh)
         btn_box.add_widget(btn_export)
         self.add_widget(btn_box)
-        
-        self.load_routine(None)
 
-    def _update_text_size(self, instance, value):
-        self.routine_display.height = value[1]
-        self.routine_display.text_size = (self.width - 20, None)
+        self.load_routine(None)
 
     def load_routine(self, instance):
         routine = get_current_routine(1)
-        if routine and routine["days"]:
-            out_text = "=== YOUR WEEKLY ROUTINE ===\n\n"
-            for day in routine["days"]:
-                out_text += f"• {day['day_of_week']}: {day['label']}\n"
-                for exercise in day["exercises"]:
-                    description = exercise["name"]
-                    if exercise["sets"] is not None and exercise["reps"]:
-                        description += f" {exercise['sets']}x{exercise['reps']}"
-                    if exercise["duration_sec"]:
-                        description += f" ({exercise['duration_sec']} sec)"
-                    out_text += f"    - {description}\n"
-                out_text += "\n"
-            self.routine_display.text = out_text
-        else:
-            self.routine_display.text = "No active routine found. Please ask the AI in the Chat tab to generate one."
+        self.routine_content.clear_widgets()
+        if not routine or not routine["days"]:
+            self.routine_display.text = "No plan saved yet. Start in Coach to build your first week."
+            empty_card = BoxLayout(
+                orientation="vertical",
+                size_hint_y=None,
+                height=dp(126),
+                padding=dp(16),
+                spacing=dp(8),
+            )
+            _add_card_background(empty_card)
+            empty_card.add_widget(_make_wrapping_label(
+                "Your plan will appear here once the coach builds it.",
+                color=COLORS["muted"],
+            ))
+            ask_coach = Button(text="Open Coach", size_hint_y=None, height=dp(48))
+            _style_button(ask_coach, primary=True)
+            ask_coach.bind(on_release=lambda _button: self._open_coach())
+            empty_card.add_widget(ask_coach)
+            self.routine_content.add_widget(empty_card)
+            return
+
+        training_days = sum(bool(day["exercises"]) for day in routine["days"])
+        self.routine_display.text = (
+            f"WEEK OF {routine['week_start']}  ·  {training_days} TRAINING DAYS"
+        )
+        for day in routine["days"]:
+            day_card = BoxLayout(
+                orientation="vertical",
+                size_hint_y=None,
+                padding=dp(14),
+                spacing=dp(8),
+            )
+            day_card.bind(minimum_height=day_card.setter("height"))
+            _add_card_background(day_card)
+            day_card.add_widget(_make_wrapping_label(
+                f"{day['day_of_week']}  /  {day['label']}",
+                color=COLORS["accent"],
+                font_size=16,
+                bold=True,
+            ))
+            if not day["exercises"]:
+                day_card.add_widget(_make_wrapping_label(
+                    "Recovery day · no session scheduled",
+                    color=COLORS["muted"],
+                    font_size=14,
+                ))
+            for exercise in day["exercises"]:
+                description = exercise["name"]
+                if exercise["sets"] is not None and exercise["reps"]:
+                    description += f"  ·  {exercise['sets']} × {exercise['reps']}"
+                if exercise["duration_sec"]:
+                    description += f"  ·  {exercise['duration_sec']} sec"
+                day_card.add_widget(_make_wrapping_label(f"•  {description}"))
+                if exercise["notes"]:
+                    day_card.add_widget(_make_wrapping_label(
+                        exercise["notes"], color=COLORS["muted"], font_size=13
+                    ))
+            self.routine_content.add_widget(day_card)
+
+    def _open_coach(self):
+        """Open the coach from the routine's helpful empty state."""
+        app = App.get_running_app()
+        if app and app.root:
+            app.root.get_screen("main_app").switch_tab("chat")
 
     def export_ics(self, instance):
         # Universal .ics fallback export (Section 7)
@@ -493,27 +850,64 @@ class RoutineTab(BoxLayout):
         
         with open("workout_schedule.ics", "w") as f:
             f.write(ics_content)
-        self.routine_display.text += "\n\n[System]: Saved 'workout_schedule.ics' to local storage!"
+        self.routine_display.text = "Calendar export saved as workout_schedule.ics"
 
 
 class AccountTab(BoxLayout):
     def __init__(self, **kwargs):
-        super(AccountTab, self).__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
-        
-        self.add_widget(Label(text="Account & Profile Settings", font_size=18, size_hint_y=0.1))
-        
-        self.profile_info = Label(text="Loading profile...", size_hint_y=0.7, halign='left', valign='top')
-        self.profile_info.bind(texture_size=self._update_text_size)
-        self.add_widget(self.profile_info)
-        
-        btn_reload = Button(text="Reload Profile Data", size_hint_y=0.2)
+        super(AccountTab, self).__init__(
+            orientation="vertical",
+            padding=[dp(16), dp(14)],
+            spacing=dp(14),
+            **kwargs,
+        )
+
+        title = _make_wrapping_label("Your profile", font_size=22, bold=True)
+        title.height = dp(34)
+        self.add_widget(title)
+
+        self.profile_card = BoxLayout(
+            orientation="vertical",
+            size_hint_y=None,
+            padding=dp(18),
+            spacing=dp(12),
+        )
+        self.profile_card.bind(
+            minimum_height=self.profile_card.setter("height")
+        )
+        _add_card_background(self.profile_card)
+        self.profile_card.add_widget(_make_wrapping_label(
+            "TRAINING PROFILE", color=COLORS["accent"], font_size=13, bold=True
+        ))
+        self.profile_info = _make_wrapping_label(
+            "Loading profile...", color=COLORS["text"], font_size=16
+        )
+        self.profile_card.add_widget(self.profile_info)
+        self.add_widget(self.profile_card)
+
+        actions = BoxLayout(
+            orientation="vertical",
+            size_hint_y=None,
+            height=dp(116),
+            spacing=dp(10),
+        )
+        btn_edit = Button(text="Edit profile", size_hint_y=None, height=dp(54))
+        _style_button(btn_edit, primary=True)
+        btn_edit.bind(on_release=self.edit_profile)
+        btn_reload = Button(text="Reload profile", size_hint_y=None, height=dp(48))
+        _style_button(btn_reload)
         btn_reload.bind(on_release=self.load_profile)
-        self.add_widget(btn_reload)
-        
+        actions.add_widget(btn_edit)
+        actions.add_widget(btn_reload)
+        self.add_widget(actions)
+
         self.load_profile(None)
 
-    def _update_text_size(self, instance, value):
-        self.profile_info.text_size = (self.width - 20, None)
+    def edit_profile(self, instance):
+        """Open the existing profile form so users can update their details."""
+        app = App.get_running_app()
+        if app and app.root:
+            app.root.current = "profile_setup"
 
     def load_profile(self, instance):
         profile = get_user(1)
@@ -522,7 +916,8 @@ class AccountTab(BoxLayout):
             text = (
                 f"Name: {profile['name']}\nAge: {profile['age'] or ''}\n"
                 f"Goals: {goals}\nExperience: {profile['experience_level'] or ''}\n"
-                f"Frequency: {profile['weekly_frequency'] or ''} days/week"
+                f"Frequency: {profile['weekly_frequency'] or ''} days/week\n"
+                f"Notes: {profile['injuries'] or 'None'}"
             )
             self.profile_info.text = text
 
@@ -533,24 +928,37 @@ class MainAppScreen(Screen):
     """
     def __init__(self, **kwargs):
         super(MainAppScreen, self).__init__(**kwargs)
-        
-        root_layout = BoxLayout(orientation='vertical')
-        
+        _style_screen(self)
+        root_layout = BoxLayout(orientation="vertical", spacing=dp(8))
+
         # Content view dynamic container
-        self.content_area = BoxLayout(orientation='vertical', size_hint_y=0.9)
-        
-        # Tab Bar
-        tab_bar = BoxLayout(orientation='horizontal', size_hint_y=0.1, spacing=2)
-        
-        btn_chat = Button(text="Chat")
+        self.content_area = BoxLayout(orientation="vertical", size_hint_y=0.88)
+
+        # A persistent bottom bar makes the three existing app sections easy to reach.
+        tab_bar = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=0.12,
+            spacing=dp(8),
+            padding=[dp(10), dp(6)],
+        )
+
+        btn_chat = Button(text="Coach")
+        _style_button(btn_chat, primary=True)
         btn_chat.bind(on_release=lambda x: self.switch_tab('chat'))
-        
-        btn_routine = Button(text="Routine")
+
+        btn_routine = Button(text="My Week")
+        _style_button(btn_routine)
         btn_routine.bind(on_release=lambda x: self.switch_tab('routine'))
-        
-        btn_account = Button(text="Account")
+
+        btn_account = Button(text="Profile")
+        _style_button(btn_account)
         btn_account.bind(on_release=lambda x: self.switch_tab('account'))
-        
+
+        self.nav_buttons = {
+            "chat": btn_chat,
+            "routine": btn_routine,
+            "account": btn_account,
+        }
         tab_bar.add_widget(btn_chat)
         tab_bar.add_widget(btn_routine)
         tab_bar.add_widget(btn_account)
@@ -569,6 +977,10 @@ class MainAppScreen(Screen):
         self.add_widget(root_layout)
 
     def switch_tab(self, tab_name):
+        if tab_name not in self.nav_buttons:
+            return
+        for name, button in self.nav_buttons.items():
+            _set_button_primary(button, name == tab_name)
         self.content_area.clear_widgets()
         if tab_name == 'chat':
             self.content_area.add_widget(self.chat_tab)

@@ -1,5 +1,20 @@
-.env
+# Virtual environment
 venv/
+
+# Environment variables
+.env
+
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# SQLite database
 app_data.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code (optional)
+.vscode/
