@@ -4,13 +4,43 @@ from pathlib import Path
 import sqlite3
 
 
-# main.py opens app_data.db relative to the project root; use that same file.
-DATABASE_PATH = Path(__file__).resolve().parents[2] / "app_data.db"
+# Default path relative to project root; can be overridden by tests.
+DEFAULT_DATABASE_PATH = Path(__file__).resolve().parents[2] / "app_data.db"
+DATABASE_PATH = DEFAULT_DATABASE_PATH
+
+
+def get_database_path() -> Path:
+    """Return the database path, ensuring writable user storage on mobile devices."""
+    global DATABASE_PATH
+    # If DATABASE_PATH was changed from default (e.g., during tests), honor the override.
+    if DATABASE_PATH != DEFAULT_DATABASE_PATH:
+        return Path(DATABASE_PATH)
+
+    try:
+        from kivy.utils import platform
+        if platform == "android":
+            try:
+                from android.storage import app_storage_path
+                storage_dir = Path(app_storage_path())
+                storage_dir.mkdir(parents=True, exist_ok=True)
+                return storage_dir / "app_data.db"
+            except (ImportError, Exception):
+                pass
+        from kivy.app import App
+        app = App.get_running_app()
+        if app and hasattr(app, "user_data_dir"):
+            storage_dir = Path(app.user_data_dir)
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            return storage_dir / "app_data.db"
+    except Exception:
+        pass
+
+    return DEFAULT_DATABASE_PATH
 
 
 def get_connection() -> sqlite3.Connection:
     """Return an open connection; the caller is responsible for closing it."""
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(get_database_path())
     connection.row_factory = sqlite3.Row
     # SQLite disables foreign-key checks by default, so enable them per connection.
     connection.execute("PRAGMA foreign_keys = ON")

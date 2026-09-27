@@ -46,6 +46,7 @@ COLORS = {
     "ink": (0.08, 0.12, 0.09, 1),
 }
 Window.clearcolor = COLORS["background"]
+Window.softinput_mode = "below_target"
 
 
 def _style_screen(screen):
@@ -997,14 +998,24 @@ class MainAppScreen(Screen):
 #-----------------------------------------------------------------------
 class FitWorksAI(App):
     def build(self):
-        sm = ScreenManager(transition=FadeTransition())
-        sm.add_widget(WelcomeScreen(name='welcome'))
-        sm.add_widget(ProfileSetupScreen(name='profile_setup'))
-        sm.add_widget(MainAppScreen(name='main_app'))
+        init_db()
+        Window.bind(on_keyboard=self.on_keyboard)
+        self.sm = ScreenManager(transition=FadeTransition())
+        self.sm.add_widget(WelcomeScreen(name='welcome'))
+        self.sm.add_widget(ProfileSetupScreen(name='profile_setup'))
+        self.sm.add_widget(MainAppScreen(name='main_app'))
         profile = get_user(1)
         if profile and (profile["name"] or "").strip():
-            sm.current = "main_app"
-        return sm
+            self.sm.current = "main_app"
+        return self.sm
+
+    def on_keyboard(self, window, key, *args):
+        # Keycode 27 corresponds to the Android hardware Back button and Desktop Esc
+        if key == 27:
+            if hasattr(self, "sm") and self.sm.current == "profile_setup":
+                self.sm.current = "welcome"
+                return True
+        return False
 
 
 if __name__ == '__main__':

@@ -19,3 +19,7 @@ Thumbs.db
 
 # VS Code (optional)
 .vscode/
+
+# Buildozer & Android artifacts
+.buildozer/
+bin/
