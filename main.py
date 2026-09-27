@@ -175,7 +175,20 @@ def init_db():
             profile["injuries"],
         )
 
-init_db()
+
+def _safe_init_db():
+    """Init the database without taking the whole app down if storage fails.
+
+    On Android an unhandled exception at import time kills the process before
+    any UI appears, which looks like a random launch crash. Log it instead so
+    the app can still start (and so adb logcat shows the real cause).
+    """
+    try:
+        init_db()
+    except Exception as error:  # noqa: BLE001 - startup must survive any storage failure
+        print(f"Database init failed: {error!r}")
+
+_safe_init_db()
 
 
 def _exercise_fields(exercise_text):

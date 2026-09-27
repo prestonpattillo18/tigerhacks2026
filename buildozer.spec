@@ -29,7 +29,10 @@ version = 0.1.0
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy,openssl,python-dotenv,urllib3,certifi,charset_normalizer,idna,requests
+# Only packages the app actually imports (stdlib urllib is used for HTTP).
+# requests/urllib3/charset_normalizer were removed: they are never imported and
+# their optional C extensions are a common source of launch crashes on Android.
+requirements = python3,kivy,openssl,python-dotenv,certifi
 
 # (str) Supported orientation (one of landscape, sensorLandscape, portrait or all)
 orientation = portrait
@@ -60,7 +63,9 @@ android.private_storage = True
 android.accept_sdk_license = True
 
 # (str) The Android arch to build for
-android.archs = arm64-v8a
+# arm64-v8a covers modern phones (Galaxy A51); x86_64 covers x86-based
+# emulators such as BlueStacks, which cannot run an arm-only APK.
+android.archs = arm64-v8a,x86_64
 
 # (bool) enables Android auto backup feature (Android API >=23)
 android.allow_backup = True
