@@ -1,7 +1,13 @@
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # imports
 import re
 from datetime import date, timedelta
+from threading import Thread
 from kivy.app import App
+from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition
@@ -9,6 +15,7 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
+from backend.ai.gemini_client import generate_coach_reply, generate_weekly_routine
 from backend.database.database import create_database
 from backend.database.crud import (
     add_exercise,
@@ -114,16 +121,40 @@ def mock_backend_chat(user_message):
     intent = classify_query_intent(user_message)
 
     if intent == "generate_routine":
-        # Mock structured output for routine generation (Section 6.2)
-        sample_routine = {
-            "Monday": {"label": "Push Day", "exercises": ["Bench Press 3x10", "Overhead Press 3x12", "Tricep Dips 3x15"]},
-            "Tuesday": {"label": "Pull Day", "exercises": ["Pull-ups 3x8", "Barbell Rows 3x10", "Bicep Curls 3x12"]},
-            "Wednesday": {"label": "Rest Day", "exercises": ["Light Stretching / Walking"]},
-            "Thursday": {"label": "Leg Day", "exercises": ["Squats 4x10", "Lunge 3x12", "Calf Raises 4x15"]},
-            "Friday": {"label": "Core & Cardio", "exercises": ["Plank 3x60s", "HIIT 20 mins"]},
-            "Saturday": {"label": "Active Recovery", "exercises": ["Yoga / Mobility Work"]},
-            "Sunday": {"label": "Rest Day", "exercises": ["Rest"]}
-        }
+        profile = get_user(user_id)
+        using_default_routine = False
+        try:
+            routine_days = generate_weekly_routine(profile or {}, user_message)
+        except RuntimeError:
+            # Keep the demo usable without an API key or network connection.
+            using_default_routine = True
+            sample_routine = {
+                "Monday": {"label": "Push Day", "exercises": ["Bench Press 3x10", "Overhead Press 3x12", "Tricep Dips 3x15"]},
+                "Tuesday": {"label": "Pull Day", "exercises": ["Pull-ups 3x8", "Barbell Rows 3x10", "Bicep Curls 3x12"]},
+                "Wednesday": {"label": "Rest Day", "exercises": ["Light Stretching / Walking"]},
+                "Thursday": {"label": "Leg Day", "exercises": ["Squats 4x10", "Lunge 3x12", "Calf Raises 4x15"]},
+                "Friday": {"label": "Core & Cardio", "exercises": ["Plank 3x60s", "HIIT 20 mins"]},
+                "Saturday": {"label": "Active Recovery", "exercises": ["Yoga / Mobility Work"]},
+                "Sunday": {"label": "Rest Day", "exercises": ["Rest"]},
+            }
+            routine_days = []
+            for day_name, details in sample_routine.items():
+                exercises = []
+                for exercise_text in details["exercises"]:
+                    name, sets, reps, duration_sec = _exercise_fields(exercise_text)
+                    exercises.append({
+                        "name": name,
+                        "sets": sets,
+                        "reps": reps,
+                        "duration_sec": duration_sec,
+                        "notes": None,
+                    })
+                routine_days.append({
+                    "day_of_week": day_name,
+                    "label": details["label"],
+                    "exercises": exercises,
+                })
+
         current_routine = get_current_routine(user_id)
         week_start = (date.today() - timedelta(days=date.today().weekday())).isoformat()
         routine_id = create_routine(
@@ -131,40 +162,89 @@ def mock_backend_chat(user_message):
             week_start,
             source="chat_update" if current_routine else "initial",
         )
-        for day_name, details in sample_routine.items():
-            day_id = add_routine_day(routine_id, day_name, details["label"])
-            for exercise_text in details["exercises"]:
-                name, sets, reps, duration_sec = _exercise_fields(exercise_text)
-                add_exercise(day_id, name, sets, reps, duration_sec)
+        for day in routine_days:
+            day_id = add_routine_day(routine_id, day["day_of_week"], day["label"])
+            for exercise in day["exercises"]:
+                add_exercise(
+                    day_id,
+                    exercise["name"],
+                    exercise["sets"],
+                    exercise["reps"],
+                    exercise["duration_sec"],
+                    exercise["notes"],
+                )
         linked_routine_id = routine_id
-        response = "I've generated a new 7-day workout routine tailored to your profile! You can view it on the Routine tab."
-    elif intent == "update_profile":
-        profile = get_user(user_id)
-        message_words = set(re.findall(r"\b\w+\b", user_message.lower()))
-        injury_keywords = {
-            "injury", "injuries", "sprain", "sprains", "hurt", "hurts", "hurting",
-            "pain", "pains",
-        }
-        if profile and message_words.intersection(injury_keywords):
-            old_notes = profile["injuries"] or ""
-            notes = f"{old_notes}; {user_message}".strip("; ")
-            update_user_profile(
-                user_id,
-                profile["name"],
-                profile["age"],
-                profile["sex"],
-                profile["height_cm"],
-                profile["weight_kg"],
-                profile["goals"],
-                profile["experience_level"],
-                profile["weekly_frequency"],
-                notes,
-            )
-            response = "I've saved that recovery note to your profile. Please avoid painful movements and consult a professional about your injury."
+        if using_default_routine:
+            response = "Gemini was unavailable, so I created a default 7-day workout plan. You can view it on the Routine tab."
         else:
-            response = "Tell me which profile detail you'd like to update, such as an injury note or weekly workout frequency."
-    else:
-        response = f"I'm your AI Fitness Assistant. You said: '{user_message}'. How can I adjust your routine today?"
+            response = "I've generated a new 7-day workout routine tailored to your profile! You can view it on the Routine tab."
+    elif intent in ("update_profile", "general_chat"):
+        profile = get_user(user_id)
+        injury_note_saved = False
+        if intent == "update_profile":
+            message_words = set(re.findall(r"\b\w+\b", user_message.lower()))
+            injury_keywords = {
+                "injury", "injuries", "sprain", "sprains", "hurt", "hurts", "hurting",
+                "pain", "pains",
+            }
+            if profile and message_words.intersection(injury_keywords):
+                old_notes = profile["injuries"] or ""
+                notes = f"{old_notes}; {user_message}".strip("; ")
+                update_user_profile(
+                    user_id,
+                    profile["name"],
+                    profile["age"],
+                    profile["sex"],
+                    profile["height_cm"],
+                    profile["weight_kg"],
+                    profile["goals"],
+                    profile["experience_level"],
+                    profile["weekly_frequency"],
+                    notes,
+                )
+                injury_note_saved = True
+                profile = get_user(user_id)
+
+        history = get_conversation_history(user_id, limit=12)
+        if history and history[-1]["role"] == "user":
+            history = history[:-1]
+        current_routine = get_current_routine(user_id)
+        try:
+            coach_result = generate_coach_reply(
+                profile or {}, user_message, history, current_routine
+            )
+            response = coach_result["reply"]
+            routine_update = coach_result.get("routine_update")
+            if routine_update:
+                week_start = (
+                    date.today() - timedelta(days=date.today().weekday())
+                ).isoformat()
+                routine_id = create_routine(
+                    user_id,
+                    week_start,
+                    source="chat_update" if current_routine else "initial",
+                )
+                for day in routine_update["days"]:
+                    day_id = add_routine_day(
+                        routine_id, day["day_of_week"], day["label"]
+                    )
+                    for exercise in day["exercises"]:
+                        add_exercise(
+                            day_id,
+                            exercise["name"],
+                            exercise["sets"],
+                            exercise["reps"],
+                            exercise["duration_sec"],
+                            exercise["notes"],
+                        )
+                linked_routine_id = routine_id
+                response += " I've updated this week's routine for you."
+        except RuntimeError as error:
+            print(f"Gemini coach response unavailable: {error}")
+            if injury_note_saved:
+                response = "I've saved that recovery note. Avoid movements that cause pain, and consult a healthcare professional if symptoms are serious or worsening."
+            else:
+                response = "I couldn't reach the AI coach right now. Please try again in a moment."
 
     save_message(user_id, "assistant", response, linked_routine_id)
     return response
@@ -259,12 +339,14 @@ class ProfileSetupScreen(Screen):
             profile["injuries"] if profile else None,
         )
         
-        # Generate a starter routine only once; profile edits should keep this week's plan.
-        if not has_current_routine:
-            mock_backend_chat("Please generate my initial routine.")
-        
         # Switch to Main App layout
         self.manager.current = 'main_app'
+        # Generate a starter routine off the UI thread only when this week has none.
+        if not has_current_routine:
+            main_screen = self.manager.get_screen("main_app")
+            main_screen.chat_tab.start_background_request(
+                "Please generate my initial routine."
+            )
 
 
 class ChatTab(BoxLayout):
@@ -288,11 +370,11 @@ class ChatTab(BoxLayout):
         # Input controls
         input_box = BoxLayout(orientation='horizontal', size_hint=(1, 0.15), spacing=5)
         self.msg_input = TextInput(multiline=False)
-        btn_send = Button(text="Send", size_hint_x=0.25)
-        btn_send.bind(on_release=self.send_message)
+        self.send_button = Button(text="Send", size_hint_x=0.25)
+        self.send_button.bind(on_release=self.send_message)
         
         input_box.add_widget(self.msg_input)
-        input_box.add_widget(btn_send)
+        input_box.add_widget(self.send_button)
         self.add_widget(input_box)
         
     def _update_text_size(self, instance, value):
@@ -302,10 +384,61 @@ class ChatTab(BoxLayout):
     def send_message(self, instance):
         text = self.msg_input.text.strip()
         if text:
-            self.chat_log.text += f"\nYou: {text}\n"
-            reply = mock_backend_chat(text)
-            self.chat_log.text += f"AI: {reply}\n"
-            self.msg_input.text = ""
+            self.start_background_request(text)
+
+    def start_background_request(self, user_message):
+        """Show immediate feedback, then handle the chat request off the UI thread."""
+        self.chat_log.text += f"\nYou: {user_message}\nAI: Thinking...\n"
+        self.msg_input.text = ""
+        self.msg_input.disabled = True
+        self.send_button.disabled = True
+        try:
+            worker = Thread(
+                target=self._run_background_request,
+                args=(user_message,),
+                daemon=True,
+            )
+            worker.start()
+        except Exception as error:
+            print(f"Could not start chat worker: {error!r}")
+            Clock.schedule_once(
+                lambda _dt: self._finish_background_request(
+                    "Something went wrong generating a reply, please try again."
+                ),
+                0,
+            )
+
+    def _run_background_request(self, user_message):
+        """Run database and Gemini work in a worker and schedule its UI result."""
+        try:
+            response = mock_backend_chat(user_message)
+            if not response:
+                response = "I couldn't generate a reply. Please try again."
+            Clock.schedule_once(
+                lambda _dt: self._finish_background_request(response), 0
+            )
+        except Exception as error:
+            # Keep an unexpected worker failure visible in logs and in the chat.
+            print(f"Unexpected error while generating a chat reply: {error!r}")
+            Clock.schedule_once(
+                lambda _dt: self._finish_background_request(
+                    "Something went wrong generating a reply, please try again."
+                ),
+                0,
+            )
+
+    def _finish_background_request(self, response):
+        """Update Kivy widgets on the main thread after the worker finishes."""
+        self.chat_log.text = self.chat_log.text.replace("AI: Thinking...\n", "", 1)
+        self.chat_log.text += f"AI: {response}\n"
+        self.msg_input.disabled = False
+        self.send_button.disabled = False
+
+        app = App.get_running_app()
+        if app and app.root and "main_app" in app.root.screen_names:
+            main_screen = app.root.get_screen("main_app")
+            main_screen.routine_tab.load_routine(None)
+            main_screen.account_tab.load_profile(None)
 
 
 class RoutineTab(BoxLayout):

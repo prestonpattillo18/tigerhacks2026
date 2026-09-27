@@ -1,0 +1,4 @@
+Kivy>=2.3.1
+google-genai>=2.25.0
+pydantic>=2.12.5,<3.0.0
+python-dotenv
